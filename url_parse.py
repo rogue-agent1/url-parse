@@ -1,97 +1,87 @@
 #!/usr/bin/env python3
-"""url_parse: URL parser and builder (RFC 3986)."""
-import re, sys
+"""url_parse - URL parser, builder, and normalizer."""
+import sys, re
 
 class URL:
-    def __init__(self, scheme="", authority="", userinfo="", host="", port=None,
-                 path="", query="", fragment=""):
-        self.scheme = scheme; self.userinfo = userinfo; self.host = host
-        self.port = port; self.path = path; self.query = query; self.fragment = fragment
+    def __init__(self, scheme="", host="", port=None, path="/", query=None, fragment="", userinfo=""):
+        self.scheme = scheme
+        self.host = host
+        self.port = port
+        self.path = path
+        self.query = query or {}
+        self.fragment = fragment
+        self.userinfo = userinfo
 
-    @property
-    def authority(self):
-        a = ""
-        if self.userinfo: a += self.userinfo + "@"
-        a += self.host
-        if self.port is not None: a += f":{self.port}"
-        return a
+    @staticmethod
+    def parse(url_str):
+        m = re.match(r'^(?:([a-z][a-z0-9+.-]*):)?//(?:([^@]+)@)?([^:/?#]+)(?::(\d+))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?$', url_str, re.I)
+        if not m:
+            return URL(path=url_str)
+        scheme, userinfo, host, port, path, qs, frag = m.groups()
+        query = {}
+        if qs:
+            for pair in qs.split("&"):
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    query[k] = v
+                else:
+                    query[pair] = ""
+        return URL(scheme=scheme or "", host=host or "", port=int(port) if port else None,
+                   path=path or "/", query=query, fragment=frag or "", userinfo=userinfo or "")
 
-    def __str__(self):
-        result = ""
-        if self.scheme: result += self.scheme + "://"
-        result += self.authority
-        result += self.path
-        if self.query: result += "?" + self.query
-        if self.fragment: result += "#" + self.fragment
-        return result
+    def to_string(self):
+        s = ""
+        if self.scheme:
+            s += f"{self.scheme}://"
+        if self.userinfo:
+            s += f"{self.userinfo}@"
+        s += self.host
+        if self.port:
+            s += f":{self.port}"
+        s += self.path or "/"
+        if self.query:
+            qs = "&".join(f"{k}={v}" if v else k for k, v in self.query.items())
+            s += f"?{qs}"
+        if self.fragment:
+            s += f"#{self.fragment}"
+        return s
 
-    def query_params(self):
-        if not self.query: return {}
-        params = {}
-        for pair in self.query.split("&"):
-            if "=" in pair:
-                k, v = pair.split("=", 1)
-                params[k] = v
-            elif pair:
-                params[pair] = ""
-        return params
+    def with_query(self, key, value):
+        q = dict(self.query)
+        q[key] = value
+        return URL(self.scheme, self.host, self.port, self.path, q, self.fragment, self.userinfo)
 
-def parse(url_str):
-    pattern = r'^(?:([a-zA-Z][a-zA-Z0-9+.-]*):)?(?://(?:([^@]*)@)?([^/:?#]*)(?::(\d+))?)?([^?#]*)(?:\?([^#]*))?(?:#(.*))?$'
-    m = re.match(pattern, url_str)
-    if not m: raise ValueError(f"Invalid URL: {url_str}")
-    return URL(
-        scheme=m.group(1) or "",
-        userinfo=m.group(2) or "",
-        host=m.group(3) or "",
-        port=int(m.group(4)) if m.group(4) else None,
-        path=m.group(5) or "",
-        query=m.group(6) or "",
-        fragment=m.group(7) or "",
-    )
-
-def percent_encode(s, safe=""):
-    result = []
-    for c in s:
-        if c.isalnum() or c in "-._~" + safe:
-            result.append(c)
-        else:
-            result.append(f"%{ord(c):02X}")
-    return "".join(result)
-
-def percent_decode(s):
-    result = []
-    i = 0
-    while i < len(s):
-        if s[i] == "%" and i + 2 < len(s):
-            result.append(chr(int(s[i+1:i+3], 16)))
-            i += 3
-        else:
-            result.append(s[i]); i += 1
-    return "".join(result)
+    def normalize(self):
+        scheme = self.scheme.lower()
+        host = self.host.lower()
+        path = self.path or "/"
+        port = self.port
+        if (scheme == "http" and port == 80) or (scheme == "https" and port == 443):
+            port = None
+        return URL(scheme, host, port, path, self.query, self.fragment, self.userinfo)
 
 def test():
-    u = parse("https://user:pass@example.com:8080/path/to?q=1&r=2#frag")
+    u = URL.parse("https://user:pass@example.com:8080/path?key=val&foo=bar#section")
     assert u.scheme == "https"
-    assert u.userinfo == "user:pass"
     assert u.host == "example.com"
     assert u.port == 8080
-    assert u.path == "/path/to"
-    assert u.query == "q=1&r=2"
-    assert u.fragment == "frag"
-    assert u.query_params() == {"q": "1", "r": "2"}
-    # Roundtrip
-    assert str(u) == "https://user:pass@example.com:8080/path/to?q=1&r=2#frag"
-    # Simple
-    u2 = parse("http://localhost/")
-    assert u2.host == "localhost"
-    assert u2.port is None
-    # Percent encoding
-    assert percent_encode("hello world") == "hello%20world"
-    assert percent_decode("hello%20world") == "hello world"
-    assert percent_encode("/path", safe="/") == "/path"
+    assert u.path == "/path"
+    assert u.query == {"key": "val", "foo": "bar"}
+    assert u.fragment == "section"
+    assert u.userinfo == "user:pass"
+    simple = URL.parse("http://example.com")
+    assert simple.scheme == "http"
+    assert simple.host == "example.com"
+    u2 = simple.with_query("page", "1")
+    assert u2.query["page"] == "1"
+    norm = URL.parse("HTTP://Example.COM:80/Path").normalize()
+    assert norm.scheme == "http"
+    assert norm.host == "example.com"
+    assert norm.port is None
+    s = URL.parse("https://api.example.com/v1/users?limit=10").to_string()
+    assert "https://api.example.com/v1/users" in s
+    assert "limit=10" in s
     print("All tests passed!")
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "test": test()
-    else: print("Usage: url_parse.py test")
+    test() if "--test" in sys.argv else print("url_parse: URL parser. Use --test")
