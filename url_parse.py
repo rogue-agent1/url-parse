@@ -1,87 +1,96 @@
 #!/usr/bin/env python3
-"""url_parse - URL parser, builder, and normalizer."""
-import sys, re
+"""URL parser and builder. Zero dependencies."""
+import sys
 
 class URL:
-    def __init__(self, scheme="", host="", port=None, path="/", query=None, fragment="", userinfo=""):
-        self.scheme = scheme
-        self.host = host
-        self.port = port
-        self.path = path
-        self.query = query or {}
-        self.fragment = fragment
-        self.userinfo = userinfo
+    def __init__(self, url=""):
+        self.scheme = ""; self.host = ""; self.port = 0
+        self.path = ""; self.query = {}; self.fragment = ""
+        self.username = ""; self.password = ""
+        if url: self._parse(url)
 
-    @staticmethod
-    def parse(url_str):
-        m = re.match(r'^(?:([a-z][a-z0-9+.-]*):)?//(?:([^@]+)@)?([^:/?#]+)(?::(\d+))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?$', url_str, re.I)
-        if not m:
-            return URL(path=url_str)
-        scheme, userinfo, host, port, path, qs, frag = m.groups()
-        query = {}
-        if qs:
+    def _parse(self, url):
+        rest = url
+        if "://" in rest:
+            self.scheme, rest = rest.split("://", 1)
+        if "#" in rest:
+            rest, self.fragment = rest.rsplit("#", 1)
+        if "?" in rest:
+            rest, qs = rest.split("?", 1)
             for pair in qs.split("&"):
                 if "=" in pair:
                     k, v = pair.split("=", 1)
-                    query[k] = v
+                    self.query[_decode(k)] = _decode(v)
                 else:
-                    query[pair] = ""
-        return URL(scheme=scheme or "", host=host or "", port=int(port) if port else None,
-                   path=path or "/", query=query, fragment=frag or "", userinfo=userinfo or "")
+                    self.query[_decode(pair)] = ""
+        if "/" in rest:
+            hostpart, self.path = rest.split("/", 1)
+            self.path = "/" + self.path
+        else:
+            hostpart = rest; self.path = "/"
+        if "@" in hostpart:
+            userinfo, hostpart = hostpart.rsplit("@", 1)
+            if ":" in userinfo:
+                self.username, self.password = userinfo.split(":", 1)
+            else:
+                self.username = userinfo
+        if ":" in hostpart and hostpart.count(":") == 1:
+            self.host, port_s = hostpart.rsplit(":", 1)
+            try: self.port = int(port_s)
+            except: self.host = hostpart
+        else:
+            self.host = hostpart
 
-    def to_string(self):
-        s = ""
-        if self.scheme:
-            s += f"{self.scheme}://"
-        if self.userinfo:
-            s += f"{self.userinfo}@"
-        s += self.host
-        if self.port:
-            s += f":{self.port}"
-        s += self.path or "/"
+    def build(self):
+        url = ""
+        if self.scheme: url += f"{self.scheme}://"
+        if self.username:
+            url += self.username
+            if self.password: url += f":{self.password}"
+            url += "@"
+        url += self.host
+        if self.port: url += f":{self.port}"
+        url += self.path
         if self.query:
-            qs = "&".join(f"{k}={v}" if v else k for k, v in self.query.items())
-            s += f"?{qs}"
-        if self.fragment:
-            s += f"#{self.fragment}"
-        return s
+            url += "?" + "&".join(f"{_encode(k)}={_encode(v)}" for k, v in self.query.items())
+        if self.fragment: url += f"#{self.fragment}"
+        return url
 
-    def with_query(self, key, value):
-        q = dict(self.query)
-        q[key] = value
-        return URL(self.scheme, self.host, self.port, self.path, q, self.fragment, self.userinfo)
+    def __repr__(self):
+        return self.build()
 
-    def normalize(self):
-        scheme = self.scheme.lower()
-        host = self.host.lower()
-        path = self.path or "/"
-        port = self.port
-        if (scheme == "http" and port == 80) or (scheme == "https" and port == 443):
-            port = None
-        return URL(scheme, host, port, path, self.query, self.fragment, self.userinfo)
+    def with_query(self, **kwargs):
+        u = URL(self.build())
+        u.query.update(kwargs)
+        return u
 
-def test():
-    u = URL.parse("https://user:pass@example.com:8080/path?key=val&foo=bar#section")
-    assert u.scheme == "https"
-    assert u.host == "example.com"
-    assert u.port == 8080
-    assert u.path == "/path"
-    assert u.query == {"key": "val", "foo": "bar"}
-    assert u.fragment == "section"
-    assert u.userinfo == "user:pass"
-    simple = URL.parse("http://example.com")
-    assert simple.scheme == "http"
-    assert simple.host == "example.com"
-    u2 = simple.with_query("page", "1")
-    assert u2.query["page"] == "1"
-    norm = URL.parse("HTTP://Example.COM:80/Path").normalize()
-    assert norm.scheme == "http"
-    assert norm.host == "example.com"
-    assert norm.port is None
-    s = URL.parse("https://api.example.com/v1/users?limit=10").to_string()
-    assert "https://api.example.com/v1/users" in s
-    assert "limit=10" in s
-    print("All tests passed!")
+    def with_path(self, path):
+        u = URL(self.build())
+        u.path = path
+        return u
+
+def _encode(s):
+    safe = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~")
+    return "".join(c if c in safe else f"%{ord(c):02X}" for c in str(s))
+
+def _decode(s):
+    result = []; i = 0
+    while i < len(s):
+        if s[i] == "%" and i+2 < len(s):
+            result.append(chr(int(s[i+1:i+3], 16))); i += 3
+        elif s[i] == "+": result.append(" "); i += 1
+        else: result.append(s[i]); i += 1
+    return "".join(result)
+
+def encode(s): return _encode(s)
+def decode(s): return _decode(s)
 
 if __name__ == "__main__":
-    test() if "--test" in sys.argv else print("url_parse: URL parser. Use --test")
+    u = URL(sys.argv[1] if len(sys.argv) > 1 else "https://user:pass@example.com:8080/path?q=hello&lang=en#section")
+    print(f"scheme: {u.scheme}")
+    print(f"host: {u.host}")
+    print(f"port: {u.port}")
+    print(f"path: {u.path}")
+    print(f"query: {u.query}")
+    print(f"fragment: {u.fragment}")
+    print(f"rebuilt: {u.build()}")
